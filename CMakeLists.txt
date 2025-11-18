@@ -23,6 +23,7 @@ add_executable(vtable_analyzer
     src/main.cpp
     src/pe/pe_loader.cpp
     src/elf/elf_loader.cpp
+    src/macho/macho_loader.cpp
     src/analysis/vtable_scanner.cpp
     src/analysis/cfg.cpp
     src/analysis/dataflow.cpp

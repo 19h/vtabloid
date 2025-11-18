@@ -6,6 +6,7 @@
 #include <memory>
 #include "pe/pe_loader.hpp"
 #include "elf/elf_loader.hpp"
+#include "macho/macho_loader.hpp"
 #include "analysis/vtable_scanner.hpp"
 #include "analysis/cfg.hpp"
 #include "analysis/dataflow.hpp"
@@ -31,12 +32,19 @@ int main(int argc, char* argv[]) {
     file.read(magic, 4);
     file.close();
 
+    uint32_t magic_u32 = 0;
+    std::memcpy(&magic_u32, magic, 4);
+
     if (magic[0] == 'M' && magic[1] == 'Z') {
         std::cout << "[*] Detected PE Binary." << std::endl;
         loader = std::make_unique<PE::PELoader>(filepath);
     } else if (magic[0] == 0x7F && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F') {
         std::cout << "[*] Detected ELF Binary." << std::endl;
         loader = std::make_unique<ELF::ELFLoader>(filepath);
+    } else if (magic_u32 == MachO::MH_MAGIC_64 || magic_u32 == MachO::MH_CIGAM_64 ||
+               magic_u32 == MachO::FAT_MAGIC || magic_u32 == MachO::FAT_CIGAM) {
+        std::cout << "[*] Detected Mach-O Binary." << std::endl;
+        loader = std::make_unique<MachO::MachoLoader>(filepath);
     } else {
         std::cerr << "[!] Unknown file format." << std::endl;
         return 1;
