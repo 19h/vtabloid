@@ -38,6 +38,7 @@ namespace Analysis {
         auto td_offset = loader_.rva_to_offset(Common::RVA{col->pTypeDescriptor - static_cast<uint32_t>(base)});
         if (!td_offset) return std::nullopt;
 
+        // TypeDescriptor name starts at offset 8
         return loader_.view().read_string(*td_offset + 8);
     }
 
@@ -53,6 +54,7 @@ namespace Analysis {
         auto td_offset = loader_.rva_to_offset(Common::RVA{static_cast<uint32_t>(col->pTypeDescriptor)});
         if (!td_offset) return std::nullopt;
 
+        // TypeDescriptor name starts at offset 16 (vptr + spare)
         return loader_.view().read_string(*td_offset + 16);
     }
 
@@ -62,66 +64,49 @@ namespace Analysis {
         size_t ptr_size = loader_.is_64bit() ? 8 : 4;
 
         for (const auto& sec : loader_.sections()) {
-            if (!sec.is_readable() || sec.is_executable()) continue;
+            // VTables are in Read-Only Data sections (usually .rdata)
+            if (!sec.is_readable() || sec.is_executable() || sec.is_writable()) continue;
 
             for (uint32_t off = 0; off <= sec.raw_size - ptr_size; off += static_cast<uint32_t>(ptr_size)) {
-                uint64_t ptr_val = 0;
-                if (loader_.is_64bit()) {
-                    auto val = view.read<uint64_t>(sec.raw_ptr + off);
-                    if (val) ptr_val = *val;
-                } else {
-                    auto val = view.read<uint32_t>(sec.raw_ptr + off);
-                    if (val) ptr_val = *val;
-                }
+                auto ptr_val = view.read_ptr(sec.raw_ptr + off, loader_.architecture());
+                if (!ptr_val || *ptr_val == 0) continue;
 
-                if (!ptr_val) continue;
-
-                if (is_executable_ptr(ptr_val)) {
+                if (is_executable_ptr(*ptr_val)) {
                     Common::RVA curr_rva = sec.rva + off;
 
                     bool rtti = false;
                     std::string name = "Unknown";
 
+                    // Check for RTTI COL pointer immediately preceding the vtable
                     if (curr_rva.value >= ptr_size) {
                         auto col_ptr_off = loader_.rva_to_offset(curr_rva - static_cast<uint32_t>(ptr_size));
                         if (col_ptr_off) {
-                            uint64_t col_va = 0;
-                            if (loader_.is_64bit()) {
-                                auto v = view.read<uint64_t>(*col_ptr_off);
-                                if (v) col_va = *v;
-                            } else {
-                                auto v = view.read<uint32_t>(*col_ptr_off);
-                                if (v) col_va = *v;
-                            }
-
-                            if (col_va > base) {
-                                auto res = validate_rtti(Common::RVA{static_cast<uint32_t>(col_va - base)});
+                            auto col_va = view.read_ptr(*col_ptr_off, loader_.architecture());
+                            if (col_va && *col_va > base) {
+                                auto res = validate_rtti(Common::RVA{static_cast<uint32_t>(*col_va - base)});
                                 if (res) { rtti = true; name = *res; }
                             }
                         }
                     }
 
+                    // Collect methods
                     std::vector<uint32_t> methods;
-                    methods.push_back(static_cast<uint32_t>(ptr_val - base));
+                    methods.push_back(static_cast<uint32_t>(*ptr_val - base));
 
                     uint32_t lookahead = static_cast<uint32_t>(ptr_size);
                     while (off + lookahead <= sec.raw_size - ptr_size) {
-                        uint64_t next_ptr = 0;
-                        if (loader_.is_64bit()) {
-                            auto v = view.read<uint64_t>(sec.raw_ptr + off + lookahead);
-                            if (v) next_ptr = *v;
-                        } else {
-                            auto v = view.read<uint32_t>(sec.raw_ptr + off + lookahead);
-                            if (v) next_ptr = *v;
-                        }
+                        auto next_ptr = view.read_ptr(sec.raw_ptr + off + lookahead, loader_.architecture());
+                        if (!next_ptr || !is_executable_ptr(*next_ptr)) break;
 
-                        if (!next_ptr || !is_executable_ptr(next_ptr)) break;
-                        methods.push_back(static_cast<uint32_t>(next_ptr - base));
+                        methods.push_back(static_cast<uint32_t>(*next_ptr - base));
                         lookahead += static_cast<uint32_t>(ptr_size);
                     }
 
+                    // Heuristic: A vtable must have RTTI OR at least 2 methods to be considered valid
+                    // This reduces false positives from random pointers in data sections
                     if (rtti || methods.size() >= 2) {
                         vtables_.push_back({curr_rva, methods.size(), name, rtti, methods});
+                        // Skip past this vtable
                         off += (static_cast<uint32_t>(methods.size()) * static_cast<uint32_t>(ptr_size)) - static_cast<uint32_t>(ptr_size);
                     }
                 }

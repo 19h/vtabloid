@@ -2,6 +2,8 @@
 #include <variant>
 #include <cstdint>
 #include <compare>
+#include <vector>
+#include <algorithm>
 
 namespace Analysis {
 
@@ -17,17 +19,21 @@ namespace Analysis {
         bool operator==(const Constant&) const = default;
     };
 
-    // Unified Symbolic Pointer for both DataFlow and Structure Analysis
+    // Enhanced Symbolic Pointer
     struct SymbolicPtr {
         enum class Base {
-            This,       // The object instance
-            Stack,      // The stack frame
+            This,       // The object instance (RCX in constructor)
+            Stack,      // The stack frame (RSP/RBP relative)
             Global,     // Global data
+            Heap,       // Return from allocator
             Unknown
         } type;
 
         int64_t offset;
-        uint64_t bound_vtable; // 0 if unbound
+
+        // History tracking for type inference
+        // If we know this pointer was assigned VTable X, we track it here.
+        uint64_t bound_vtable;
 
         bool operator==(const SymbolicPtr&) const = default;
     };
@@ -51,7 +57,16 @@ namespace Analysis {
             if (std::holds_alternative<SymbolicPtr>(a) && std::holds_alternative<SymbolicPtr>(b)) {
                 const auto& sa = std::get<SymbolicPtr>(a);
                 const auto& sb = std::get<SymbolicPtr>(b);
-                if (sa.type == sb.type && sa.offset == sb.offset && sa.bound_vtable == sb.bound_vtable) return sa;
+
+                if (sa.type == sb.type && sa.offset == sb.offset) {
+                    // If vtables differ, we might be seeing a merge point of two different constructors
+                    // or a base/derived confusion. For now, if they differ, we keep the pointer but lose the vtable binding.
+                    SymbolicPtr res = sa;
+                    if (sa.bound_vtable != sb.bound_vtable) {
+                        res.bound_vtable = 0;
+                    }
+                    return res;
+                }
                 return Bottom{};
             }
 

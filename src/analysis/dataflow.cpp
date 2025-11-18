@@ -123,6 +123,15 @@ namespace Analysis {
     }
 
     void DataFlowEngine::process_instruction(const Instruction& instr, RegisterState& state, bool is_heuristic) {
+        // Handle CALLs: Invalidate volatile registers (RAX, RCX, RDX, R8, R9, R10, R11)
+        if (instr.is_call()) {
+            int volatiles[] = {0, 2, 3, 8, 9, 10, 11}; // Mapped indices
+            for(int idx : volatiles) {
+                state.regs[static_cast<size_t>(idx)] = Bottom{};
+            }
+            return;
+        }
+
         if (instr.id == X86_INS_MOV) {
             auto& dest = instr.operands[0];
             auto& src = instr.operands[1];
@@ -149,6 +158,7 @@ namespace Analysis {
                 }
             }
             else if (dest.type == X86_OP_MEM && src.type == X86_OP_REG) {
+                // MOV [reg], reg (Potential vtable assignment)
                 int src_idx = map_reg(src.reg);
                 if (src_idx >= 0 && std::holds_alternative<Constant>(state.regs[static_cast<size_t>(src_idx)])) {
                     uint64_t val = std::get<Constant>(state.regs[static_cast<size_t>(src_idx)]).value;
@@ -162,6 +172,7 @@ namespace Analysis {
                 }
             }
             else if (dest.type == X86_OP_MEM && src.type == X86_OP_IMM) {
+                // MOV [reg], imm (Potential vtable assignment)
                 uint64_t val = static_cast<uint64_t>(src.imm);
                 if (std::binary_search(vtable_vas_.begin(), vtable_vas_.end(), val)) {
                      bool exists = false;
@@ -202,6 +213,7 @@ namespace Analysis {
             }
         }
         else {
+            // Conservative invalidation
             for (int i = 0; i < instr.op_count; ++i) {
                 if (instr.operands[i].type == X86_OP_REG && (instr.operands[i].access & CS_AC_WRITE)) {
                     int idx = map_reg(instr.operands[i].reg);

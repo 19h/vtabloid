@@ -1,6 +1,7 @@
 #pragma once
 #include <vector>
 #include <string>
+#include <optional>
 #include "../pe/pe_loader.hpp"
 
 namespace Analysis {

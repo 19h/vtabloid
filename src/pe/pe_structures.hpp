@@ -29,9 +29,11 @@ namespace PE {
     };
 
     constexpr int IMAGE_NUMBEROF_DIRECTORY_ENTRIES = 16;
+    constexpr int IMAGE_DIRECTORY_ENTRY_EXPORT = 0;
+    constexpr int IMAGE_DIRECTORY_ENTRY_IMPORT = 1;
     constexpr int IMAGE_DIRECTORY_ENTRY_EXCEPTION = 3;
+    constexpr int IMAGE_DIRECTORY_ENTRY_BASERELOC = 5;
 
-    // 32-bit Optional Header
     struct IMAGE_OPTIONAL_HEADER32 {
         uint16_t Magic;
         uint8_t  MajorLinkerVersion;
@@ -66,7 +68,6 @@ namespace PE {
         IMAGE_DATA_DIRECTORY DataDirectory[IMAGE_NUMBEROF_DIRECTORY_ENTRIES];
     };
 
-    // 64-bit Optional Header (PE32+)
     struct IMAGE_OPTIONAL_HEADER64 {
         uint16_t Magic;
         uint8_t  MajorLinkerVersion;
@@ -113,13 +114,13 @@ namespace PE {
         uint32_t Characteristics;
     };
 
-    // x64 Exception Directory Entry (.pdata)
     struct IMAGE_RUNTIME_FUNCTION_ENTRY {
         uint32_t BeginAddress;
         uint32_t EndAddress;
         uint32_t UnwindInfoAddress;
     };
 
+    constexpr uint32_t SCN_CNT_CODE = 0x00000020;
     constexpr uint32_t SCN_MEM_EXECUTE = 0x20000000;
     constexpr uint32_t SCN_MEM_READ    = 0x40000000;
     constexpr uint32_t SCN_MEM_WRITE   = 0x80000000;

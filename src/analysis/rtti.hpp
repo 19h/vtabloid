@@ -28,4 +28,10 @@ namespace Analysis::MSVC {
         uint32_t numBaseClasses;
         uint32_t pBaseClassArray; // VA or RVA depending on arch
     };
+
+    struct TypeDescriptor {
+        uintptr_t pVFTable; // Virtual Function Table for TypeDescriptor
+        uintptr_t spare;
+        char name[1];       // Mangled name
+    };
 }

@@ -9,11 +9,6 @@
 
 namespace PE {
 
-    enum class Arch {
-        x86,
-        x64
-    };
-
     struct Section {
         std::string name;
         Common::RVA rva;
@@ -22,9 +17,11 @@ namespace PE {
         uint32_t raw_size;
         uint32_t characteristics;
 
-        bool is_executable() const { return characteristics & SCN_MEM_EXECUTE; }
-        bool is_readable() const { return characteristics & SCN_MEM_READ; }
-        bool contains(Common::RVA addr) const {
+        [[nodiscard]] bool is_executable() const { return characteristics & SCN_MEM_EXECUTE; }
+        [[nodiscard]] bool is_readable() const { return characteristics & SCN_MEM_READ; }
+        [[nodiscard]] bool is_writable() const { return characteristics & SCN_MEM_WRITE; }
+
+        [[nodiscard]] bool contains(Common::RVA addr) const {
             return addr.value >= rva.value && addr.value < rva.value + virtual_size;
         }
     };
@@ -34,17 +31,19 @@ namespace PE {
         explicit PELoader(const std::string& filepath);
         bool load();
 
-        std::optional<Common::FileOffset> rva_to_offset(Common::RVA rva) const;
-        std::optional<Common::RVA> offset_to_rva(Common::FileOffset offset) const;
+        [[nodiscard]] std::optional<Common::FileOffset> rva_to_offset(Common::RVA rva) const;
+        [[nodiscard]] std::optional<Common::RVA> offset_to_rva(Common::FileOffset offset) const;
 
-        const std::vector<Section>& sections() const { return sections_; }
-        const Common::BinaryView& view() const { return *view_; }
-        Common::RVA entry_point() const { return entry_point_; }
-        Arch architecture() const { return arch_; }
-        bool is_64bit() const { return arch_ == Arch::x64; }
+        // Helper to read a pointer from an RVA
+        [[nodiscard]] std::optional<uint64_t> read_ptr_at(Common::RVA rva) const;
 
-        // Returns RVA and Size of the Exception Directory (.pdata)
-        std::pair<Common::RVA, uint32_t> exception_directory() const { return exception_dir_; }
+        [[nodiscard]] const std::vector<Section>& sections() const { return sections_; }
+        [[nodiscard]] const Common::BinaryView& view() const { return *view_; }
+        [[nodiscard]] Common::RVA entry_point() const { return entry_point_; }
+        [[nodiscard]] Common::Arch architecture() const { return arch_; }
+        [[nodiscard]] bool is_64bit() const { return arch_ == Common::Arch::x64; }
+
+        [[nodiscard]] std::pair<Common::RVA, uint32_t> exception_directory() const { return exception_dir_; }
 
     private:
         std::string filepath_;
@@ -52,7 +51,7 @@ namespace PE {
         std::unique_ptr<Common::BinaryView> view_;
         std::vector<Section> sections_;
         Common::RVA entry_point_{0};
-        Arch arch_{Arch::x86};
+        Common::Arch arch_{Common::Arch::x86};
         std::pair<Common::RVA, uint32_t> exception_dir_{0, 0};
     };
 }

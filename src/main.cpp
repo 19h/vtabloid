@@ -41,7 +41,7 @@ int main(int argc, char* argv[]) {
     std::cout << "[*] Running Structure Inference Engine..." << std::endl;
     Analysis::StructureAnalyzer struct_analyzer(cfg, loader);
     struct_analyzer.analyze_vtables(vtables);
-    // struct_analyzer.analyze_constructors(engine.assignments()); // Optional expansion
+    struct_analyzer.analyze_constructors(engine.assignments());
 
     // --- Visualization Logic ---
 
@@ -96,6 +96,7 @@ int main(int argc, char* argv[]) {
                     else if (size == 2) type_guess = "short";
                     else if (size == 4) type_guess = "int/float";
                     else if (size == 8) type_guess = "ptr/qword";
+                    if (size >= 16) type_guess = "vector/xmm";
 
                     std::cout << "      Offset 0x" << std::hex << offset
                               << ": Size " << std::dec << size

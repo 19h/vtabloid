@@ -35,13 +35,12 @@ namespace PE {
         auto opt_offset = nt_offset + 4 + sizeof(IMAGE_FILE_HEADER);
 
         if (file_hdr->Machine == MACHINE_AMD64) {
-            arch_ = Arch::x64;
+            arch_ = Common::Arch::x64;
             auto opt = raw_view.read<IMAGE_OPTIONAL_HEADER64>(opt_offset);
             if (!opt) return false;
             image_base = opt->ImageBase;
             entry_point = opt->AddressOfEntryPoint;
 
-            // Read Exception Directory
             if (opt->NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_EXCEPTION) {
                 exception_dir_ = {
                     Common::RVA{opt->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].VirtualAddress},
@@ -50,13 +49,12 @@ namespace PE {
             }
 
         } else if (file_hdr->Machine == MACHINE_I386) {
-            arch_ = Arch::x86;
+            arch_ = Common::Arch::x86;
             auto opt = raw_view.read<IMAGE_OPTIONAL_HEADER32>(opt_offset);
             if (!opt) return false;
             image_base = opt->ImageBase;
             entry_point = opt->AddressOfEntryPoint;
         } else {
-            std::cerr << "Unsupported Machine Type: 0x" << std::hex << file_hdr->Machine << std::endl;
             return false;
         }
 
@@ -100,5 +98,11 @@ namespace PE {
             }
         }
         return std::nullopt;
+    }
+
+    std::optional<uint64_t> PELoader::read_ptr_at(Common::RVA rva) const {
+        auto off = rva_to_offset(rva);
+        if (!off) return std::nullopt;
+        return view_->read_ptr(*off, arch_);
     }
 }
