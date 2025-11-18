@@ -22,12 +22,27 @@ namespace ELF {
 
     // Section Types
     constexpr uint32_t SHT_PROGBITS = 1;
-    constexpr uint32_t SHT_NOBITS = 8;
+    constexpr uint32_t SHT_SYMTAB   = 2;
+    constexpr uint32_t SHT_RELA     = 4;     // Relocation with addend
+    constexpr uint32_t SHT_NOBITS   = 8;
+    constexpr uint32_t SHT_REL      = 9;     // Relocation no addend
+    constexpr uint32_t SHT_DYNSYM   = 11;
+    constexpr uint32_t SHT_INIT_ARRAY = 14;
 
     // Section Flags
-    constexpr uint64_t SHF_WRITE = 0x1;
-    constexpr uint64_t SHF_ALLOC = 0x2;
+    constexpr uint64_t SHF_WRITE     = 0x1;
+    constexpr uint64_t SHF_ALLOC     = 0x2;
     constexpr uint64_t SHF_EXECINSTR = 0x4;
+
+    // Relocation Types (x86_64)
+    constexpr uint32_t R_X86_64_64        = 1;
+    constexpr uint32_t R_X86_64_GLOB_DAT  = 6;
+    constexpr uint32_t R_X86_64_JUMP_SLOT = 7;
+    constexpr uint32_t R_X86_64_RELATIVE  = 8;
+
+    // Helpers to decode r_info (ELF64)
+    inline constexpr uint32_t ELF64_R_SYM(uint64_t r_info)  { return static_cast<uint32_t>(r_info >> 32); }
+    inline constexpr uint32_t ELF64_R_TYPE(uint64_t r_info) { return static_cast<uint32_t>(r_info & 0xFFFFFFFFu); }
 
     // 32-bit Header
     struct Elf32_Ehdr {
@@ -91,5 +106,36 @@ namespace ELF {
         uint32_t sh_info;
         uint64_t sh_addralign;
         uint64_t sh_entsize;
+    };
+
+    // Relocation Entries
+    struct Elf64_Rela {
+        uint64_t r_offset; // Location to apply relocation (VA)
+        uint64_t r_info;   // Symbol table index and type
+        int64_t  r_addend; // Constant addend
+    };
+
+    struct Elf32_Rel {
+        uint32_t r_offset;
+        uint32_t r_info;
+    };
+
+    // Symbol Table Entries
+    struct Elf64_Sym {
+        uint32_t st_name;
+        unsigned char st_info;
+        unsigned char st_other;
+        uint16_t st_shndx;
+        uint64_t st_value;
+        uint64_t st_size;
+    };
+
+    struct Elf32_Sym {
+        uint32_t st_name;
+        uint32_t st_value;
+        uint32_t st_size;
+        unsigned char st_info;
+        unsigned char st_other;
+        uint16_t st_shndx;
     };
 }

@@ -140,9 +140,16 @@ namespace Analysis {
         worklist.push_back(start_idx);
         in_worklist[start_idx] = true;
 
-        int this_reg = loader_.is_64bit() ? map_reg(X86_REG_RCX) : map_reg(X86_REG_ECX);
-        if (this_reg >= 0) {
-            block_in[start_idx].regs[static_cast<size_t>(this_reg)] = SymbolicPtr{SymbolicPtr::Base::This, 0, ctx.vtable_va};
+        // Seed 'this' pointer.
+        // For x64, we seed both RCX (MSVC) and RDI (System V) to be robust.
+        if (loader_.is_64bit()) {
+            int rcx = map_reg(X86_REG_RCX);
+            int rdi = map_reg(X86_REG_RDI);
+            if (rcx >= 0) block_in[start_idx].regs[static_cast<size_t>(rcx)] = SymbolicPtr{SymbolicPtr::Base::This, 0, ctx.vtable_va};
+            if (rdi >= 0) block_in[start_idx].regs[static_cast<size_t>(rdi)] = SymbolicPtr{SymbolicPtr::Base::This, 0, ctx.vtable_va};
+        } else {
+            int ecx = map_reg(X86_REG_ECX);
+            if (ecx >= 0) block_in[start_idx].regs[static_cast<size_t>(ecx)] = SymbolicPtr{SymbolicPtr::Base::This, 0, ctx.vtable_va};
         }
 
         while (!worklist.empty()) {

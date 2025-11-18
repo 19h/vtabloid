@@ -38,16 +38,23 @@ namespace Analysis {
     }
 
     void CFG::discover_functions() {
+        // 1. Entry Point
         function_entries_.push_back(loader_.entry_point());
 
-        // Exception Directory (PE x64 only)
+        // 2. Exported/Symbol Functions
+        const auto& symbols = loader_.function_symbols();
+        function_entries_.insert(function_entries_.end(), symbols.begin(), symbols.end());
+
+        // 3. Global Constructors (.init_array / TLS callbacks)
+        const auto& ctors = loader_.global_constructors();
+        function_entries_.insert(function_entries_.end(), ctors.begin(), ctors.end());
+
+        // 4. Exception Directory (PE x64 only)
         if (loader_.is_64bit()) {
             auto [pdata_rva, pdata_size] = loader_.exception_directory();
             if (pdata_rva.value != 0 && pdata_size > 0) {
                 auto pdata_offset = loader_.rva_to_offset(pdata_rva);
                 if (pdata_offset) {
-                    // Note: This struct is PE specific, but we only get here if exception_directory returns valid data
-                    // which ELFLoader returns {0,0} for.
                     struct RuntimeFunction { uint32_t Begin; uint32_t End; uint32_t Unwind; };
                     size_t count = pdata_size / sizeof(RuntimeFunction);
                     const auto* entries = reinterpret_cast<const RuntimeFunction*>(
@@ -63,7 +70,7 @@ namespace Analysis {
             }
         }
 
-        // Prolog Scanning (Heuristic)
+        // 5. Prolog Scanning (Heuristic)
         const auto& view = loader_.view();
         for (const auto& sec : loader_.sections()) {
             if (!sec.is_executable) continue;
@@ -73,14 +80,24 @@ namespace Analysis {
 
             if (loader_.is_64bit()) {
                 for (size_t i = 0; i < sec.raw_size - 4; ++i) {
-                    if (data[i] == 0x48 && data[i+1] == 0x83 && data[i+2] == 0xEC) {
+                    // Standard: push rbp; mov rbp, rsp (0x55 0x48 0x89 0xE5)
+                    if (data[i] == 0x55 && data[i+1] == 0x48 && data[i+2] == 0x89 && data[i+3] == 0xE5) {
                         function_entries_.push_back(sec.rva + static_cast<uint32_t>(i));
                     }
+                    // Stack alloc: sub rsp, imm8 (0x48 0x83 0xEC)
+                    else if (data[i] == 0x48 && data[i+1] == 0x83 && data[i+2] == 0xEC) {
+                        function_entries_.push_back(sec.rva + static_cast<uint32_t>(i));
+                    }
+                    // Stack alloc: sub rsp, imm32 (0x48 0x81 0xEC)
+                    else if (data[i] == 0x48 && data[i+1] == 0x81 && data[i+2] == 0xEC) {
+                        function_entries_.push_back(sec.rva + static_cast<uint32_t>(i));
+                    }
+                    // Windows: mov [rsp+arg], reg (0x48 0x89 0x5C 0x24)
                     else if (data[i] == 0x48 && data[i+1] == 0x89 && data[i+2] == 0x5C && data[i+3] == 0x24) {
                         function_entries_.push_back(sec.rva + static_cast<uint32_t>(i));
                     }
-                    // push rbp; mov rbp, rsp (0x55 0x48 0x89 0xE5)
-                    else if (data[i] == 0x55 && data[i+1] == 0x48 && data[i+2] == 0x89 && data[i+3] == 0xE5) {
+                    // Intel CET / Linux: endbr64 (0xF3 0x0F 0x1E 0xFA)
+                    else if (data[i] == 0xF3 && data[i+1] == 0x0F && data[i+2] == 0x1E && data[i+3] == 0xFA) {
                         function_entries_.push_back(sec.rva + static_cast<uint32_t>(i));
                     }
                 }
@@ -120,10 +137,31 @@ namespace Analysis {
                 if (!offset) break;
 
                 const uint8_t* code = loader_.view().ptr(*offset);
+                if (!code) break;
+
+                // Disassemble at most the remaining bytes in the containing section
+                size_t available_bytes = 0;
+                for (const auto& sec : loader_.sections()) {
+                    if (sec.contains(pc)) {
+                        available_bytes = sec.raw_size - (pc.value - sec.rva.value);
+                        break;
+                    }
+                }
+                if (available_bytes == 0) break;
+                size_t max_read = std::min<size_t>(15, available_bytes);
+
                 cs_insn* insn;
-                size_t count = cs_disasm(cs_handle_, code, 15, loader_.view().image_base() + pc.value, 1, &insn);
+                size_t count = cs_disasm(cs_handle_, code, max_read, loader_.view().image_base() + pc.value, 1, &insn);
 
                 if (count == 0) break;
+
+                // Capstone may return an instruction with no detail when SKIPDATA hits data.
+                // In that case, just advance past the bytes and keep scanning.
+                if (!insn || !insn[0].detail) {
+                    pc = pc + static_cast<uint32_t>(insn ? insn[0].size : 1);
+                    if (insn) cs_free(insn, count);
+                    continue;
+                }
 
                 Instruction instr;
                 instr.address = pc;

@@ -40,7 +40,15 @@ namespace Common {
         virtual Arch architecture() const = 0;
         virtual bool is_64bit() const = 0;
 
-        // Platform specific extensions (PE only for now, returns {0,0} for ELF)
+        // Platform specific extensions
         virtual std::pair<RVA, uint32_t> exception_directory() const { return {RVA{0}, 0}; }
+
+        // New: Symbol and Constructor discovery
+        virtual const std::vector<RVA>& function_symbols() const { return function_symbols_; }
+        virtual const std::vector<RVA>& global_constructors() const { return global_constructors_; }
+
+    protected:
+        std::vector<RVA> function_symbols_;
+        std::vector<RVA> global_constructors_;
     };
 }

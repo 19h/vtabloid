@@ -70,7 +70,7 @@ int main(int argc, char* argv[]) {
     std::cout << "    Discovered " << cfg.get_blocks().size() << " basic blocks." << std::endl;
 
     std::cout << "[*] Running Iterative Data Flow Analysis..." << std::endl;
-    Analysis::DataFlowEngine engine(cfg, vtables, loader->view().image_base());
+    Analysis::DataFlowEngine engine(cfg, *loader, vtables);
     engine.run();
 
     std::cout << "[*] Running Structure Inference Engine..." << std::endl;

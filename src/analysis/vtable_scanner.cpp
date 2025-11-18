@@ -8,10 +8,15 @@ namespace Analysis {
 
     bool VTableScanner::is_executable_ptr(uint64_t va) const {
         uint64_t base = loader_.view().image_base();
-        if (va < base) return false;
-        if (va - base > 0xFFFFFFFF) return false;
 
-        Common::RVA rva{static_cast<uint32_t>(va - base)};
+        Common::RVA rva{0};
+        if (va >= base) {
+             rva = Common::RVA{static_cast<uint32_t>(va - base)};
+        } else {
+             if (base == 0) rva = Common::RVA{static_cast<uint32_t>(va)};
+             else return false;
+        }
+
         for (const auto& sec : loader_.sections()) {
             if (sec.is_executable && sec.contains(rva)) return true;
         }
@@ -20,8 +25,14 @@ namespace Analysis {
 
     bool VTableScanner::check_method_prologue(uint64_t va) const {
         uint64_t base = loader_.view().image_base();
-        if (va < base) return false;
-        Common::RVA rva{static_cast<uint32_t>(va - base)};
+        Common::RVA rva{0};
+
+        if (va >= base) {
+             rva = Common::RVA{static_cast<uint32_t>(va - base)};
+        } else {
+             if (base == 0) rva = Common::RVA{static_cast<uint32_t>(va)};
+             else return false;
+        }
 
         auto offset = loader_.rva_to_offset(rva);
         if (!offset) return false;
@@ -91,51 +102,55 @@ namespace Analysis {
     }
 
     void VTableScanner::scan() {
-        const auto& view = loader_.view();
-        uint64_t base = view.image_base();
+        uint64_t base = loader_.view().image_base();
         size_t ptr_size = loader_.is_64bit() ? 8 : 4;
 
         for (const auto& sec : loader_.sections()) {
-            if (!sec.is_readable || sec.is_executable || sec.is_writable) continue;
+            // Include .data.rel.ro (readable & non-executable); allow writable to catch relocated vtables.
+            if (!sec.is_readable || sec.is_executable) continue;
 
-            for (uint32_t off = 0; off <= sec.raw_size - ptr_size; off += static_cast<uint32_t>(ptr_size)) {
-                auto ptr_val = view.read_ptr(sec.raw_ptr + off, loader_.architecture());
+            for (uint32_t rva_off = 0; rva_off <= sec.virtual_size - ptr_size; rva_off += static_cast<uint32_t>(ptr_size)) {
+                Common::RVA curr_rva = sec.rva + rva_off;
+
+                auto ptr_val = loader_.read_ptr_at(curr_rva);
                 if (!ptr_val || *ptr_val == 0) continue;
 
                 if (is_executable_ptr(*ptr_val)) {
-                    Common::RVA curr_rva = sec.rva + off;
-
                     bool rtti = false;
                     std::string name = "Unknown";
 
                     if (curr_rva.value >= ptr_size) {
-                        auto col_ptr_off = loader_.rva_to_offset(curr_rva - static_cast<uint32_t>(ptr_size));
-                        if (col_ptr_off) {
-                            auto col_va = view.read_ptr(*col_ptr_off, loader_.architecture());
-                            if (col_va && *col_va > base) {
-                                auto res = validate_rtti(Common::RVA{static_cast<uint32_t>(*col_va - base)});
-                                if (res) { rtti = true; name = *res; }
-                            }
+                        auto col_ptr_rva = curr_rva - static_cast<uint32_t>(ptr_size);
+                        auto col_va = loader_.read_ptr_at(col_ptr_rva);
+
+                        if (col_va && *col_va > base) {
+                            auto res = validate_rtti(Common::RVA{static_cast<uint32_t>(*col_va - base)});
+                            if (res) { rtti = true; name = *res; }
                         }
                     }
 
                     std::vector<uint32_t> methods;
-                    methods.push_back(static_cast<uint32_t>(*ptr_val - base));
+                    uint64_t method_va = *ptr_val;
+                    uint32_t method_rva = (base == 0) ? static_cast<uint32_t>(method_va) : static_cast<uint32_t>(method_va - base);
+                    methods.push_back(method_rva);
 
-                    bool valid_prologue = check_method_prologue(*ptr_val);
+                    bool valid_prologue = check_method_prologue(method_va);
 
                     uint32_t lookahead = static_cast<uint32_t>(ptr_size);
-                    while (off + lookahead <= sec.raw_size - ptr_size) {
-                        auto next_ptr = view.read_ptr(sec.raw_ptr + off + lookahead, loader_.architecture());
+                    while (rva_off + lookahead <= sec.virtual_size - ptr_size) {
+                        auto next_ptr = loader_.read_ptr_at(curr_rva + lookahead);
                         if (!next_ptr || !is_executable_ptr(*next_ptr)) break;
 
-                        methods.push_back(static_cast<uint32_t>(*next_ptr - base));
+                        uint64_t next_va = *next_ptr;
+                        uint32_t next_rva = (base == 0) ? static_cast<uint32_t>(next_va) : static_cast<uint32_t>(next_va - base);
+                        methods.push_back(next_rva);
+
                         lookahead += static_cast<uint32_t>(ptr_size);
                     }
 
                     if (rtti || (methods.size() >= 2 && valid_prologue) || methods.size() >= 5) {
                         vtables_.push_back({curr_rva, methods.size(), name, rtti, methods, valid_prologue});
-                        off += (static_cast<uint32_t>(methods.size()) * static_cast<uint32_t>(ptr_size)) - static_cast<uint32_t>(ptr_size);
+                        rva_off += (static_cast<uint32_t>(methods.size()) * static_cast<uint32_t>(ptr_size)) - static_cast<uint32_t>(ptr_size);
                     }
                 }
             }
