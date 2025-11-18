@@ -6,6 +6,7 @@
 #include "analysis/vtable_scanner.hpp"
 #include "analysis/cfg.hpp"
 #include "analysis/dataflow.hpp"
+#include "analysis/structure.hpp"
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {
@@ -37,20 +38,25 @@ int main(int argc, char* argv[]) {
     Analysis::DataFlowEngine engine(cfg, vtables, loader.view().image_base());
     engine.run();
 
+    std::cout << "[*] Running Structure Inference Engine..." << std::endl;
+    Analysis::StructureAnalyzer struct_analyzer(cfg, loader);
+    struct_analyzer.analyze_vtables(vtables);
+    // struct_analyzer.analyze_constructors(engine.assignments()); // Optional expansion
+
     // --- Visualization Logic ---
 
-    // 1. Map VTable VA to Info for symbol lookup
     std::map<uint64_t, const Analysis::VTableInfo*> vtable_lookup;
     uint64_t image_base = loader.view().image_base();
     for (const auto& vt : vtables) {
         vtable_lookup[image_base + vt.rva.value] = &vt;
     }
 
-    // 2. Group assignments by VTable VA
     std::map<uint64_t, std::vector<Analysis::Assignment>> grouped_assignments;
     for (const auto& assign : engine.assignments()) {
         grouped_assignments[assign.vtable_va].push_back(assign);
     }
+
+    const auto& layouts = struct_analyzer.get_layouts();
 
     std::cout << "\n=== VTable Analysis Report ===" << std::endl;
 
@@ -71,7 +77,34 @@ int main(int argc, char* argv[]) {
                   << " | RTTI: " << (has_rtti ? "YES" : "NO")
                   << " | Symbol: " << name << std::endl;
 
-        // Sort assignments by instruction address
+        // Print Reconstructed Layout
+        if (layouts.count(va)) {
+            const auto& layout = layouts.at(va);
+            if (!layout.fields.empty()) {
+                std::cout << "    [Layout Inference]" << std::endl;
+                // Deduplicate fields by offset
+                std::map<int64_t, std::vector<Analysis::FieldAccess>> fields_by_offset;
+                for(const auto& f : layout.fields) fields_by_offset[f.offset].push_back(f);
+
+                for(const auto& [offset, accesses] : fields_by_offset) {
+                    // Determine likely type based on size
+                    uint32_t size = 0;
+                    for(const auto& acc : accesses) if(acc.size > size) size = acc.size;
+
+                    std::string type_guess = "unknown";
+                    if (size == 1) type_guess = "byte/bool";
+                    else if (size == 2) type_guess = "short";
+                    else if (size == 4) type_guess = "int/float";
+                    else if (size == 8) type_guess = "ptr/qword";
+
+                    std::cout << "      Offset 0x" << std::hex << offset
+                              << ": Size " << std::dec << size
+                              << " (" << type_guess << ") - "
+                              << accesses.size() << " refs" << std::endl;
+                }
+            }
+        }
+
         std::sort(assigns.begin(), assigns.end(),
             [](const Analysis::Assignment& a, const Analysis::Assignment& b) {
                 return a.addr.value < b.addr.value;
