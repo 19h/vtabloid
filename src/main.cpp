@@ -2,7 +2,10 @@
 #include <iomanip>
 #include <map>
 #include <algorithm>
+#include <fstream>
+#include <memory>
 #include "pe/pe_loader.hpp"
+#include "elf/elf_loader.hpp"
 #include "analysis/vtable_scanner.hpp"
 #include "analysis/cfg.hpp"
 #include "analysis/dataflow.hpp"
@@ -10,43 +13,67 @@
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {
-        std::cerr << "Usage: " << argv[0] << " <pe_binary>" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " <binary>" << std::endl;
         return 1;
     }
 
-    std::cout << "[*] Loading PE Binary..." << std::endl;
-    PE::PELoader loader(argv[1]);
-    if (!loader.load()) {
+    std::string filepath = argv[1];
+    std::unique_ptr<Common::BinaryLoader> loader;
+
+    // Detect File Type
+    std::ifstream file(filepath, std::ios::binary);
+    if (!file) {
+        std::cerr << "[!] Failed to open file." << std::endl;
+        return 1;
+    }
+
+    char magic[4] = {0};
+    file.read(magic, 4);
+    file.close();
+
+    if (magic[0] == 'M' && magic[1] == 'Z') {
+        std::cout << "[*] Detected PE Binary." << std::endl;
+        loader = std::make_unique<PE::PELoader>(filepath);
+    } else if (magic[0] == 0x7F && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F') {
+        std::cout << "[*] Detected ELF Binary." << std::endl;
+        loader = std::make_unique<ELF::ELFLoader>(filepath);
+    } else {
+        std::cerr << "[!] Unknown file format." << std::endl;
+        return 1;
+    }
+
+    if (!loader->load()) {
         std::cerr << "[!] Failed to load binary." << std::endl;
         return 1;
     }
-    std::cout << "    ImageBase: 0x" << std::hex << loader.view().image_base() << std::endl;
-    std::cout << "    Architecture: " << (loader.is_64bit() ? "x64" : "x86") << std::endl;
+
+    std::cout << "    ImageBase: 0x" << std::hex << loader->view().image_base() << std::endl;
+    std::cout << "    Architecture: " << (loader->is_64bit() ? "x64" : "x86") << std::endl;
 
     std::cout << "[*] Scanning for VTables..." << std::endl;
-    Analysis::VTableScanner scanner(loader);
+    Analysis::VTableScanner scanner(*loader);
     scanner.scan();
     const auto& vtables = scanner.results();
     std::cout << "    Found " << std::dec << vtables.size() << " candidates." << std::endl;
 
     std::cout << "[*] Building Control Flow Graph..." << std::endl;
-    Analysis::CFG cfg(loader);
+    Analysis::CFG cfg(*loader);
     cfg.build();
     std::cout << "    Discovered " << cfg.get_blocks().size() << " basic blocks." << std::endl;
 
     std::cout << "[*] Running Iterative Data Flow Analysis..." << std::endl;
-    Analysis::DataFlowEngine engine(cfg, vtables, loader.view().image_base());
+    Analysis::DataFlowEngine engine(cfg, vtables, loader->view().image_base());
     engine.run();
 
     std::cout << "[*] Running Structure Inference Engine..." << std::endl;
-    Analysis::StructureAnalyzer struct_analyzer(cfg, loader);
+    Analysis::StructureAnalyzer struct_analyzer(cfg, *loader);
     struct_analyzer.analyze_vtables(vtables);
     struct_analyzer.analyze_constructors(engine.assignments());
 
     // --- Visualization & Filtering Logic ---
 
     std::map<uint64_t, const Analysis::VTableInfo*> vtable_lookup;
-    uint64_t image_base = loader.view().image_base();
+    uint64_t image_base = loader->view().image_base();
     for (const auto& vt : vtables) {
         vtable_lookup[image_base + vt.rva.value] = &vt;
     }
@@ -70,23 +97,14 @@ int main(int argc, char* argv[]) {
         // --- SCORING SYSTEM ---
         int score = 0;
 
-        // 1. RTTI is the strongest indicator
         if (vt.has_rtti) score += 50;
-
-        // 2. Assignments (XREFs) are strong indicators of usage
         if (!assigns.empty()) score += 20;
         if (assigns.size() > 2) score += 10;
-
-        // 3. Method Count (Weak indicator, but helps)
         if (vt.method_count > 2) score += 5;
         if (vt.method_count > 10) score += 5;
-
-        // 4. Prologue Validation (Already filtered in scanner, but adds confidence)
         if (vt.valid_prologues) score += 10;
 
         // --- FILTERING THRESHOLD ---
-        // If no RTTI and no Assignments, it's likely a false positive (e.g., function pointer array)
-        // unless it has a very high method count.
         if (!vt.has_rtti && assigns.empty()) {
             if (vt.method_count < 5) {
                 filtered_count++;
@@ -101,7 +119,6 @@ int main(int argc, char* argv[]) {
                   << " | Symbol: " << vt.symbol_name
                   << " | Score: " << std::dec << score << std::endl;
 
-        // Print Reconstructed Layout
         if (layouts.count(va)) {
             const auto& layout = layouts.at(va);
             if (!layout.fields.empty()) {
@@ -128,7 +145,6 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Print Assignments
         if (!assigns.empty()) {
             std::vector<Analysis::Assignment> sorted_assigns = assigns;
             std::sort(sorted_assigns.begin(), sorted_assigns.end(),

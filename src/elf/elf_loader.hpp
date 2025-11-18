@@ -1,12 +1,12 @@
 #pragma once
 #include "../common/loader.hpp"
-#include "pe_structures.hpp"
+#include "elf_structures.hpp"
 
-namespace PE {
+namespace ELF {
 
-    class PELoader : public Common::BinaryLoader {
+    class ELFLoader : public Common::BinaryLoader {
     public:
-        explicit PELoader(const std::string& filepath);
+        explicit ELFLoader(const std::string& filepath);
         bool load() override;
 
         std::optional<Common::FileOffset> rva_to_offset(Common::RVA rva) const override;
@@ -19,15 +19,16 @@ namespace PE {
         Common::Arch architecture() const override { return arch_; }
         bool is_64bit() const override { return arch_ == Common::Arch::x64; }
 
-        std::pair<Common::RVA, uint32_t> exception_directory() const override { return exception_dir_; }
-
     private:
+        bool load_32(const Common::BinaryView& raw_view);
+        bool load_64(const Common::BinaryView& raw_view);
+
         std::string filepath_;
         std::vector<uint8_t> buffer_;
         std::unique_ptr<Common::BinaryView> view_;
         std::vector<Common::Section> sections_;
         Common::RVA entry_point_{0};
         Common::Arch arch_{Common::Arch::x86};
-        std::pair<Common::RVA, uint32_t> exception_dir_{0, 0};
+        uint64_t image_base_{0};
     };
 }

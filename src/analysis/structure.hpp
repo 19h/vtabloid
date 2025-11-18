@@ -27,10 +27,8 @@ namespace Analysis {
         std::vector<FieldAccess> fields;
     };
 
-    // Stack Memory Model: Sparse map of [Offset from Entry RSP] -> Value
     using StackMemory = std::map<int64_t, LatticeValue>;
 
-    // Full Machine State
     constexpr int REG_COUNT_GPR = 16;
     constexpr int REG_COUNT_XMM = 16;
     constexpr int TOTAL_REG_COUNT = REG_COUNT_GPR + REG_COUNT_XMM;
@@ -47,7 +45,7 @@ namespace Analysis {
 
     class StructureAnalyzer {
     public:
-        StructureAnalyzer(const CFG& cfg, const PE::PELoader& loader);
+        StructureAnalyzer(const CFG& cfg, const Common::BinaryLoader& loader);
 
         void analyze_vtables(const std::vector<VTableInfo>& vtables);
         void analyze_constructors(const std::vector<Assignment>& assignments);
@@ -78,7 +76,7 @@ namespace Analysis {
         Common::RVA find_function_start(Common::RVA instr_addr) const;
 
         const CFG& cfg_;
-        const PE::PELoader& loader_;
+        const Common::BinaryLoader& loader_;
 
         std::map<uint64_t, ClassLayout> layouts_;
         std::set<uint32_t> processed_functions_;

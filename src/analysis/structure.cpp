@@ -21,7 +21,7 @@ namespace Analysis {
         return !(*this == other);
     }
 
-    StructureAnalyzer::StructureAnalyzer(const CFG& cfg, const PE::PELoader& loader)
+    StructureAnalyzer::StructureAnalyzer(const CFG& cfg, const Common::BinaryLoader& loader)
         : cfg_(cfg), loader_(loader) {
         const auto& blocks = cfg_.get_blocks();
         for (const auto& blk : blocks) {
@@ -140,7 +140,6 @@ namespace Analysis {
         worklist.push_back(start_idx);
         in_worklist[start_idx] = true;
 
-        // Initialize 'this' pointer
         int this_reg = loader_.is_64bit() ? map_reg(X86_REG_RCX) : map_reg(X86_REG_ECX);
         if (this_reg >= 0) {
             block_in[start_idx].regs[static_cast<size_t>(this_reg)] = SymbolicPtr{SymbolicPtr::Base::This, 0, ctx.vtable_va};
@@ -234,7 +233,7 @@ namespace Analysis {
                         else if (other_op.reg >= X86_REG_AX && other_op.reg <= X86_REG_R15W) size = 2;
                         else size = 1;
                     } else if (other_op.type == X86_OP_IMM) {
-                        size = 4; // Default assumption for imm
+                        size = 4;
                     }
 
                     bool is_vector = (size >= 16);

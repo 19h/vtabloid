@@ -6,7 +6,7 @@
 
 namespace Analysis {
 
-    CFG::CFG(const PE::PELoader& loader) : loader_(loader) {
+    CFG::CFG(const Common::BinaryLoader& loader) : loader_(loader) {
         cs_mode mode = loader.is_64bit() ? CS_MODE_64 : CS_MODE_32;
         if (cs_open(CS_ARCH_X86, mode, &cs_handle_) != CS_ERR_OK) {
             throw std::runtime_error("Failed to initialize Capstone");
@@ -40,28 +40,33 @@ namespace Analysis {
     void CFG::discover_functions() {
         function_entries_.push_back(loader_.entry_point());
 
+        // Exception Directory (PE x64 only)
         if (loader_.is_64bit()) {
             auto [pdata_rva, pdata_size] = loader_.exception_directory();
             if (pdata_rva.value != 0 && pdata_size > 0) {
                 auto pdata_offset = loader_.rva_to_offset(pdata_rva);
                 if (pdata_offset) {
-                    size_t count = pdata_size / sizeof(PE::IMAGE_RUNTIME_FUNCTION_ENTRY);
-                    const auto* entries = reinterpret_cast<const PE::IMAGE_RUNTIME_FUNCTION_ENTRY*>(
+                    // Note: This struct is PE specific, but we only get here if exception_directory returns valid data
+                    // which ELFLoader returns {0,0} for.
+                    struct RuntimeFunction { uint32_t Begin; uint32_t End; uint32_t Unwind; };
+                    size_t count = pdata_size / sizeof(RuntimeFunction);
+                    const auto* entries = reinterpret_cast<const RuntimeFunction*>(
                         loader_.view().ptr(*pdata_offset)
                     );
 
                     if (entries) {
                         for (size_t i = 0; i < count; ++i) {
-                            function_entries_.push_back(Common::RVA{entries[i].BeginAddress});
+                            function_entries_.push_back(Common::RVA{entries[i].Begin});
                         }
                     }
                 }
             }
         }
 
+        // Prolog Scanning (Heuristic)
         const auto& view = loader_.view();
         for (const auto& sec : loader_.sections()) {
-            if (!sec.is_executable()) continue;
+            if (!sec.is_executable) continue;
 
             const uint8_t* data = view.ptr(sec.raw_ptr);
             if (!data) continue;
@@ -72,6 +77,10 @@ namespace Analysis {
                         function_entries_.push_back(sec.rva + static_cast<uint32_t>(i));
                     }
                     else if (data[i] == 0x48 && data[i+1] == 0x89 && data[i+2] == 0x5C && data[i+3] == 0x24) {
+                        function_entries_.push_back(sec.rva + static_cast<uint32_t>(i));
+                    }
+                    // push rbp; mov rbp, rsp (0x55 0x48 0x89 0xE5)
+                    else if (data[i] == 0x55 && data[i+1] == 0x48 && data[i+2] == 0x89 && data[i+3] == 0xE5) {
                         function_entries_.push_back(sec.rva + static_cast<uint32_t>(i));
                     }
                 }
@@ -197,7 +206,7 @@ namespace Analysis {
 
             bool valid_target = false;
             for(const auto& sec : loader_.sections()) {
-                if (sec.is_executable() && sec.contains(target_rva)) {
+                if (sec.is_executable && sec.contains(target_rva)) {
                     valid_target = true;
                     break;
                 }

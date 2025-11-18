@@ -67,7 +67,7 @@ namespace PE {
             auto sec_hdr = raw_view.read<IMAGE_SECTION_HEADER>(Common::FileOffset{current_sec_offset});
             if (!sec_hdr) break;
 
-            Section s;
+            Common::Section s;
             char name[9] = {0};
             std::memcpy(name, sec_hdr->Name, 8);
             s.name = name;
@@ -75,7 +75,11 @@ namespace PE {
             s.virtual_size = sec_hdr->VirtualSize;
             s.raw_ptr = Common::FileOffset{sec_hdr->PointerToRawData};
             s.raw_size = sec_hdr->SizeOfRawData;
-            s.characteristics = sec_hdr->Characteristics;
+
+            s.is_executable = (sec_hdr->Characteristics & SCN_MEM_EXECUTE) != 0;
+            s.is_readable   = (sec_hdr->Characteristics & SCN_MEM_READ) != 0;
+            s.is_writable   = (sec_hdr->Characteristics & SCN_MEM_WRITE) != 0;
+
             sections_.push_back(s);
         }
         return true;

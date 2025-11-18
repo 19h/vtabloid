@@ -4,7 +4,7 @@
 
 namespace Analysis {
 
-    VTableScanner::VTableScanner(const PE::PELoader& loader) : loader_(loader) {}
+    VTableScanner::VTableScanner(const Common::BinaryLoader& loader) : loader_(loader) {}
 
     bool VTableScanner::is_executable_ptr(uint64_t va) const {
         uint64_t base = loader_.view().image_base();
@@ -13,12 +13,11 @@ namespace Analysis {
 
         Common::RVA rva{static_cast<uint32_t>(va - base)};
         for (const auto& sec : loader_.sections()) {
-            if (sec.is_executable() && sec.contains(rva)) return true;
+            if (sec.is_executable && sec.contains(rva)) return true;
         }
         return false;
     }
 
-    // Heuristic: Check for common x86/x64 function prologues
     bool VTableScanner::check_method_prologue(uint64_t va) const {
         uint64_t base = loader_.view().image_base();
         if (va < base) return false;
@@ -30,41 +29,23 @@ namespace Analysis {
         const uint8_t* p = loader_.view().ptr(*offset);
         if (!p) return false;
 
-        // Ensure we have enough bytes to check (at least 4)
         if (!loader_.view().contains(*offset, 4)) return false;
 
-        // 1. PUSH instructions (Common in prologues)
-        // push rbp (0x55)
         if (p[0] == 0x55) return true;
-        // push rbx (0x53), push rsi (0x56), push rdi (0x57)
         if (p[0] == 0x53 || p[0] == 0x56 || p[0] == 0x57) return true;
-        // push r12..r15 (0x41 0x54 .. 0x41 0x57)
         if (p[0] == 0x41 && (p[1] >= 0x54 && p[1] <= 0x57)) return true;
 
-        // 2. Stack Allocation
-        // sub rsp, imm8 (0x48 0x83 0xEC)
         if (p[0] == 0x48 && p[1] == 0x83 && p[2] == 0xEC) return true;
-        // sub rsp, imm32 (0x48 0x81 0xEC)
         if (p[0] == 0x48 && p[1] == 0x81 && p[2] == 0xEC) return true;
 
-        // 3. Control Flow Thunks
-        // ret (0xC3), ret imm16 (0xC2)
         if (p[0] == 0xC3 || p[0] == 0xC2) return true;
-        // jmp rel32 (0xE9), jmp rel8 (0xEB)
         if (p[0] == 0xE9 || p[0] == 0xEB) return true;
-        // jmp [rip+disp] (0xFF 0x25)
         if (p[0] == 0xFF && p[1] == 0x25) return true;
 
-        // 4. Register Initialization / Argument Homing
-        // xor eax, eax (0x31 0xC0 / 0x33 0xC0) - Common for returning 0
         if ((p[0] == 0x31 || p[0] == 0x33) && p[1] == 0xC0) return true;
-        // mov [rsp+...], reg (0x48 0x89 ...)
         if (p[0] == 0x48 && p[1] == 0x89 && (p[2] == 0x5C || p[2] == 0x4C)) return true;
-        // lea ... (0x48 0x8D) - Often used to load address of string/data
         if (p[0] == 0x48 && p[1] == 0x8D) return true;
 
-        // 5. Intel CET
-        // endbr64 (0xF3 0x0F 0x1E 0xFA)
         if (p[0] == 0xF3 && p[1] == 0x0F && p[2] == 0x1E && p[3] == 0xFA) return true;
 
         return false;
@@ -115,7 +96,7 @@ namespace Analysis {
         size_t ptr_size = loader_.is_64bit() ? 8 : 4;
 
         for (const auto& sec : loader_.sections()) {
-            if (!sec.is_readable() || sec.is_executable() || sec.is_writable()) continue;
+            if (!sec.is_readable || sec.is_executable || sec.is_writable) continue;
 
             for (uint32_t off = 0; off <= sec.raw_size - ptr_size; off += static_cast<uint32_t>(ptr_size)) {
                 auto ptr_val = view.read_ptr(sec.raw_ptr + off, loader_.architecture());
@@ -141,7 +122,6 @@ namespace Analysis {
                     std::vector<uint32_t> methods;
                     methods.push_back(static_cast<uint32_t>(*ptr_val - base));
 
-                    // Check prologue of the first method
                     bool valid_prologue = check_method_prologue(*ptr_val);
 
                     uint32_t lookahead = static_cast<uint32_t>(ptr_size);
@@ -153,10 +133,6 @@ namespace Analysis {
                         lookahead += static_cast<uint32_t>(ptr_size);
                     }
 
-                    // Heuristic Refinement:
-                    // 1. Must have RTTI OR
-                    // 2. Must have >= 2 methods AND valid prologue on the first method
-                    // 3. OR must have >= 5 methods (Relaxed check for large vtables without standard prologues)
                     if (rtti || (methods.size() >= 2 && valid_prologue) || methods.size() >= 5) {
                         vtables_.push_back({curr_rva, methods.size(), name, rtti, methods, valid_prologue});
                         off += (static_cast<uint32_t>(methods.size()) * static_cast<uint32_t>(ptr_size)) - static_cast<uint32_t>(ptr_size);

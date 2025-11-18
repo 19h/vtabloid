@@ -3,7 +3,7 @@
 #include <set>
 #include <map>
 #include <memory>
-#include "../pe/pe_loader.hpp"
+#include "../common/loader.hpp"
 #include <capstone/capstone.h>
 
 namespace Analysis {
@@ -24,8 +24,6 @@ namespace Analysis {
             return id == X86_INS_RET;
         }
         bool is_jump() const {
-            // Robust check for conditional jumps using Capstone IDs
-            // We exclude unconditional jumps (JMP, LJMP) to identify Jcc
             return (id >= X86_INS_JAE && id <= X86_INS_JS) ||
                    (id == X86_INS_JECXZ) || (id == X86_INS_JRCXZ);
         }
@@ -50,7 +48,7 @@ namespace Analysis {
 
     class CFG {
     public:
-        explicit CFG(const PE::PELoader& loader);
+        explicit CFG(const Common::BinaryLoader& loader);
         ~CFG();
 
         void build();
@@ -63,7 +61,7 @@ namespace Analysis {
         void handle_jump_table(const Instruction& instr, Common::RVA current_pc);
         void linearize_graph();
 
-        const PE::PELoader& loader_;
+        const Common::BinaryLoader& loader_;
         csh cs_handle_;
         std::map<uint32_t, std::shared_ptr<BasicBlock>> rva_to_block_;
         std::vector<std::shared_ptr<BasicBlock>> linear_blocks_;
