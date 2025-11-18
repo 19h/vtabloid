@@ -40,7 +40,6 @@ namespace Analysis {
     void CFG::discover_functions() {
         function_entries_.push_back(loader_.entry_point());
 
-        // 1. Exception Directory (x64)
         if (loader_.is_64bit()) {
             auto [pdata_rva, pdata_size] = loader_.exception_directory();
             if (pdata_rva.value != 0 && pdata_size > 0) {
@@ -60,7 +59,6 @@ namespace Analysis {
             }
         }
 
-        // 2. Prolog Scanning (Heuristic)
         const auto& view = loader_.view();
         for (const auto& sec : loader_.sections()) {
             if (!sec.is_executable()) continue;
@@ -70,18 +68,15 @@ namespace Analysis {
 
             if (loader_.is_64bit()) {
                 for (size_t i = 0; i < sec.raw_size - 4; ++i) {
-                    // sub rsp, imm8/32
                     if (data[i] == 0x48 && data[i+1] == 0x83 && data[i+2] == 0xEC) {
                         function_entries_.push_back(sec.rva + static_cast<uint32_t>(i));
                     }
-                    // mov [rsp+...], reg (common prolog)
                     else if (data[i] == 0x48 && data[i+1] == 0x89 && data[i+2] == 0x5C && data[i+3] == 0x24) {
                         function_entries_.push_back(sec.rva + static_cast<uint32_t>(i));
                     }
                 }
             } else {
                 for (size_t i = 0; i < sec.raw_size - 3; ++i) {
-                    // push ebp; mov ebp, esp
                     if (data[i] == 0x55 && data[i+1] == 0x8B && data[i+2] == 0xEC) {
                         function_entries_.push_back(sec.rva + static_cast<uint32_t>(i));
                     }
@@ -134,15 +129,12 @@ namespace Analysis {
                 block->instructions.push_back(instr);
                 pc = pc + instr.size;
 
-                // Control Flow Handling
                 if (cs_insn_group(cs_handle_, &insn[0], CS_GRP_JUMP) ||
                     cs_insn_group(cs_handle_, &insn[0], CS_GRP_RET)) {
 
                     end_of_block = true;
 
-                    // Direct Jumps
-                    // Use X86_INS_JS as the upper bound for conditional jumps in Capstone enum
-                    if (instr.id == X86_INS_JMP || (instr.id >= X86_INS_JAE && instr.id <= X86_INS_JS)) {
+                    if (instr.is_unconditional_jump() || instr.is_jump()) {
                         if (instr.operands[0].type == X86_OP_IMM) {
                             uint64_t target_va = static_cast<uint64_t>(instr.operands[0].imm);
                             uint64_t base = loader_.view().image_base();
@@ -150,11 +142,8 @@ namespace Analysis {
                                 Common::RVA target{static_cast<uint32_t>(target_va - base)};
                                 worklist.push(target);
                             }
-                        } else if (instr.id == X86_INS_JMP && instr.operands[0].type == X86_OP_MEM) {
-                            // Indirect Jump - Potential Switch Table
+                        } else if (instr.is_unconditional_jump() && instr.operands[0].type == X86_OP_MEM) {
                             handle_jump_table(instr, instr.address);
-
-                            // Add discovered targets to worklist
                             if (indirect_jumps_.count(instr.address.value)) {
                                 for (const auto& target : indirect_jumps_[instr.address.value]) {
                                     worklist.push(target);
@@ -163,8 +152,7 @@ namespace Analysis {
                         }
                     }
 
-                    // Fallthrough for conditional jumps
-                    if (instr.id != X86_INS_JMP && instr.id != X86_INS_RET) {
+                    if (!instr.is_unconditional_jump() && !instr.is_ret()) {
                         worklist.push(pc);
                     }
                 }
@@ -178,27 +166,17 @@ namespace Analysis {
     }
 
     void CFG::handle_jump_table(const Instruction& instr, Common::RVA current_pc) {
-        // Robust Jump Table Recovery
-        // Pattern: JMP [Base + Index * Scale + Disp]
-        // We attempt to resolve the Base address and iterate until we hit invalid data.
-
         const auto& op = instr.operands[0];
         if (op.type != X86_OP_MEM) return;
 
         uint64_t table_base = 0;
         uint64_t image_base = loader_.view().image_base();
 
-        // 1. Resolve Table Base Address
         if (op.mem.base == X86_REG_RIP) {
-             // RIP-relative addressing (x64)
-             // Explicit cast to uint64_t to suppress -Wsign-conversion
              table_base = image_base + current_pc.value + instr.size + static_cast<uint64_t>(op.mem.disp);
         } else if (op.mem.base == X86_REG_INVALID && op.mem.disp != 0) {
-             // Absolute addressing (x86/x64 absolute)
              table_base = static_cast<uint64_t>(op.mem.disp);
         } else {
-            // Complex addressing (e.g., register base) requires dataflow analysis to resolve.
-            // We skip this in the CFG construction phase to avoid circular dependencies.
             return;
         }
 
@@ -206,20 +184,17 @@ namespace Analysis {
         Common::RVA table_rva{static_cast<uint32_t>(table_base - image_base)};
 
         std::vector<Common::RVA> targets;
-        int max_entries = 256; // Safety limit for heuristic scan
+        int max_entries = 256;
         size_t ptr_size = loader_.is_64bit() ? 8 : 4;
 
         for (int i = 0; i < max_entries; ++i) {
             auto ptr_val = loader_.read_ptr_at(table_rva);
             if (!ptr_val) break;
 
-            // Validate Target
-            // 1. Must be within image boundaries
             if (*ptr_val < image_base) break;
 
             Common::RVA target_rva{static_cast<uint32_t>(*ptr_val - image_base)};
 
-            // 2. Must point to an executable section
             bool valid_target = false;
             for(const auto& sec : loader_.sections()) {
                 if (sec.is_executable() && sec.contains(target_rva)) {
@@ -243,13 +218,11 @@ namespace Analysis {
         linear_blocks_.reserve(rva_to_block_.size());
         uint32_t index = 0;
 
-        // Assign IDs
         for (auto& [addr, block] : rva_to_block_) {
             block->id = index++;
             linear_blocks_.push_back(block);
         }
 
-        // Link Edges
         for (auto& block : linear_blocks_) {
             if (block->instructions.empty()) continue;
             const auto& last = block->instructions.back();
@@ -262,27 +235,23 @@ namespace Analysis {
                 }
             };
 
-            if (last.id == X86_INS_RET) continue;
+            if (last.is_ret()) continue;
 
-            if (last.id == X86_INS_JMP) {
+            if (last.is_unconditional_jump()) {
                 if (last.operands[0].type == X86_OP_IMM) {
-                    // Direct Unconditional Jump
                     uint64_t target_va = static_cast<uint64_t>(last.operands[0].imm);
                     uint64_t base = loader_.view().image_base();
                     if (target_va >= base) {
                         add_edge(Common::RVA{static_cast<uint32_t>(target_va - base)});
                     }
                 } else if (last.operands[0].type == X86_OP_MEM) {
-                    // Indirect Jump (Switch Table)
-                    // Retrieve pre-calculated targets from discovery phase
                     if (indirect_jumps_.count(last.address.value)) {
                         for (const auto& target : indirect_jumps_[last.address.value]) {
                             add_edge(target);
                         }
                     }
                 }
-            } else if (last.id >= X86_INS_JAE && last.id <= X86_INS_JS) {
-                // Conditional Jump
+            } else if (last.is_jump()) {
                  if (last.operands[0].type == X86_OP_IMM) {
                     uint64_t target_va = static_cast<uint64_t>(last.operands[0].imm);
                     uint64_t base = loader_.view().image_base();
@@ -290,9 +259,9 @@ namespace Analysis {
                         add_edge(Common::RVA{static_cast<uint32_t>(target_va - base)});
                     }
                 }
-                add_edge(block->end_address); // Fallthrough edge
+                add_edge(block->end_address);
             } else {
-                add_edge(block->end_address); // Fallthrough edge
+                add_edge(block->end_address);
             }
         }
     }

@@ -24,11 +24,10 @@ namespace Analysis {
             return id == X86_INS_RET;
         }
         bool is_jump() const {
-            // Range check for Jcc (Jump if Condition)
-            // Note: X86_INS_JMP is often within this range in Capstone's enum,
-            // but we handle it separately where distinction matters.
-            // X86_INS_JS is typically the last conditional jump in the enum.
-            return id >= X86_INS_JAE && id <= X86_INS_JS;
+            // Robust check for conditional jumps using Capstone IDs
+            // We exclude unconditional jumps (JMP, LJMP) to identify Jcc
+            return (id >= X86_INS_JAE && id <= X86_INS_JS) ||
+                   (id == X86_INS_JECXZ) || (id == X86_INS_JRCXZ);
         }
         bool is_unconditional_jump() const {
             return id == X86_INS_JMP;
@@ -71,9 +70,6 @@ namespace Analysis {
         std::vector<Common::RVA> function_entries_;
         std::set<uint32_t> visited_instructions_;
 
-        // Stores resolved targets for indirect jumps (Switch Tables)
-        // Key: Address of the JMP instruction
-        // Value: List of target RVAs
         std::map<uint32_t, std::vector<Common::RVA>> indirect_jumps_;
     };
 }

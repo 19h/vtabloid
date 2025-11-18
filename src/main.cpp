@@ -43,7 +43,7 @@ int main(int argc, char* argv[]) {
     struct_analyzer.analyze_vtables(vtables);
     struct_analyzer.analyze_constructors(engine.assignments());
 
-    // --- Visualization Logic ---
+    // --- Visualization & Filtering Logic ---
 
     std::map<uint64_t, const Analysis::VTableInfo*> vtable_lookup;
     uint64_t image_base = loader.view().image_base();
@@ -60,34 +60,56 @@ int main(int argc, char* argv[]) {
 
     std::cout << "\n=== VTable Analysis Report ===" << std::endl;
 
-    for (auto& [va, assigns] : grouped_assignments) {
-        std::string name = "Unknown";
-        bool has_rtti = false;
-        size_t method_count = 0;
+    int displayed_count = 0;
+    int filtered_count = 0;
 
-        if (vtable_lookup.count(va)) {
-            const auto* info = vtable_lookup[va];
-            name = info->symbol_name;
-            has_rtti = info->has_rtti;
-            method_count = info->method_count;
+    for (const auto& vt : vtables) {
+        uint64_t va = image_base + vt.rva.value;
+        const auto& assigns = grouped_assignments[va];
+
+        // --- SCORING SYSTEM ---
+        int score = 0;
+
+        // 1. RTTI is the strongest indicator
+        if (vt.has_rtti) score += 50;
+
+        // 2. Assignments (XREFs) are strong indicators of usage
+        if (!assigns.empty()) score += 20;
+        if (assigns.size() > 2) score += 10;
+
+        // 3. Method Count (Weak indicator, but helps)
+        if (vt.method_count > 2) score += 5;
+        if (vt.method_count > 10) score += 5;
+
+        // 4. Prologue Validation (Already filtered in scanner, but adds confidence)
+        if (vt.valid_prologues) score += 10;
+
+        // --- FILTERING THRESHOLD ---
+        // If no RTTI and no Assignments, it's likely a false positive (e.g., function pointer array)
+        // unless it has a very high method count.
+        if (!vt.has_rtti && assigns.empty()) {
+            if (vt.method_count < 5) {
+                filtered_count++;
+                continue;
+            }
         }
 
+        displayed_count++;
         std::cout << "\n[+] VTable: 0x" << std::hex << va
-                  << " | Methods: " << std::dec << method_count
-                  << " | RTTI: " << (has_rtti ? "YES" : "NO")
-                  << " | Symbol: " << name << std::endl;
+                  << " | Methods: " << std::dec << vt.method_count
+                  << " | RTTI: " << (vt.has_rtti ? "YES" : "NO")
+                  << " | Symbol: " << vt.symbol_name
+                  << " | Score: " << std::dec << score << std::endl;
 
         // Print Reconstructed Layout
         if (layouts.count(va)) {
             const auto& layout = layouts.at(va);
             if (!layout.fields.empty()) {
                 std::cout << "    [Layout Inference]" << std::endl;
-                // Deduplicate fields by offset
                 std::map<int64_t, std::vector<Analysis::FieldAccess>> fields_by_offset;
                 for(const auto& f : layout.fields) fields_by_offset[f.offset].push_back(f);
 
                 for(const auto& [offset, accesses] : fields_by_offset) {
-                    // Determine likely type based on size
                     uint32_t size = 0;
                     for(const auto& acc : accesses) if(acc.size > size) size = acc.size;
 
@@ -106,17 +128,26 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        std::sort(assigns.begin(), assigns.end(),
-            [](const Analysis::Assignment& a, const Analysis::Assignment& b) {
-                return a.addr.value < b.addr.value;
-            });
+        // Print Assignments
+        if (!assigns.empty()) {
+            std::vector<Analysis::Assignment> sorted_assigns = assigns;
+            std::sort(sorted_assigns.begin(), sorted_assigns.end(),
+                [](const Analysis::Assignment& a, const Analysis::Assignment& b) {
+                    return a.addr.value < b.addr.value;
+                });
 
-        for (const auto& ref : assigns) {
-            std::cout << "    - 0x" << std::hex << ref.addr.value
-                      << ": " << ref.desc
-                      << (ref.is_heuristic ? " [Heuristic]" : "") << std::endl;
+            for (const auto& ref : sorted_assigns) {
+                std::cout << "    - 0x" << std::hex << ref.addr.value
+                          << ": " << ref.desc
+                          << (ref.is_heuristic ? " [Heuristic]" : "") << std::endl;
+            }
+        } else {
+            std::cout << "    (No direct assignments detected)" << std::endl;
         }
     }
+
+    std::cout << "\n[Summary] Displayed: " << std::dec << displayed_count
+              << " | Filtered (False Positives): " << filtered_count << std::endl;
 
     return 0;
 }

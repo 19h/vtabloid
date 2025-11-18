@@ -12,6 +12,7 @@ namespace Analysis {
         std::string symbol_name;
         bool has_rtti;
         std::vector<uint32_t> methods; // RVAs of methods
+        bool valid_prologues;          // New: Do methods look like code?
     };
 
     class VTableScanner {
@@ -22,6 +23,7 @@ namespace Analysis {
 
     private:
         bool is_executable_ptr(uint64_t va) const;
+        bool check_method_prologue(uint64_t va) const; // New validation
         std::optional<std::string> validate_rtti(Common::RVA col_rva);
         std::optional<std::string> validate_rtti_32(Common::RVA col_rva);
         std::optional<std::string> validate_rtti_64(Common::RVA col_rva);
