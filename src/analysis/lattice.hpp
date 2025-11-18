@@ -12,33 +12,35 @@ namespace Analysis {
         bool operator==(const Bottom&) const = default;
     };
 
-    // Represents a concrete integer constant (for vtable addresses)
     struct Constant {
         uint64_t value;
         bool operator==(const Constant&) const = default;
     };
 
-    // Represents a symbolic pointer: Base + Offset
-    // Base is abstract (e.g., "The 'this' pointer of the current class")
+    // Unified Symbolic Pointer for both DataFlow and Structure Analysis
     struct SymbolicPtr {
+        enum class Base {
+            This,       // The object instance
+            Stack,      // The stack frame
+            Global,     // Global data
+            Unknown
+        } type;
+
         int64_t offset;
+        uint64_t bound_vtable; // 0 if unbound
+
         bool operator==(const SymbolicPtr&) const = default;
     };
 
-    // The unified abstract value
     using LatticeValue = std::variant<Top, Bottom, Constant, SymbolicPtr>;
 
     class Lattice {
     public:
         static LatticeValue meet(const LatticeValue& a, const LatticeValue& b) {
-            // Top is identity for meet
             if (std::holds_alternative<Top>(a)) return b;
             if (std::holds_alternative<Top>(b)) return a;
-
-            // Bottom dominates
             if (std::holds_alternative<Bottom>(a) || std::holds_alternative<Bottom>(b)) return Bottom{};
 
-            // Constant Meet
             if (std::holds_alternative<Constant>(a) && std::holds_alternative<Constant>(b)) {
                 const auto& ca = std::get<Constant>(a);
                 const auto& cb = std::get<Constant>(b);
@@ -46,15 +48,13 @@ namespace Analysis {
                 return Bottom{};
             }
 
-            // Symbolic Pointer Meet
             if (std::holds_alternative<SymbolicPtr>(a) && std::holds_alternative<SymbolicPtr>(b)) {
                 const auto& sa = std::get<SymbolicPtr>(a);
                 const auto& sb = std::get<SymbolicPtr>(b);
-                if (sa.offset == sb.offset) return sa;
+                if (sa.type == sb.type && sa.offset == sb.offset && sa.bound_vtable == sb.bound_vtable) return sa;
                 return Bottom{};
             }
 
-            // Mismatched types -> Bottom
             return Bottom{};
         }
     };

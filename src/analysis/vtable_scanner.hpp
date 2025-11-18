@@ -10,6 +10,7 @@ namespace Analysis {
         size_t method_count;
         std::string symbol_name;
         bool has_rtti;
+        std::vector<uint32_t> methods; // RVAs of methods
     };
 
     class VTableScanner {

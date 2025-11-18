@@ -12,18 +12,14 @@
 
 namespace Analysis {
 
-    // --- Reporting Structures ---
-
     struct FieldAccess {
         int64_t offset;
         uint32_t size;
         bool is_write;
         Common::RVA instruction_addr;
-        std::string context; // Disassembly string for manual verification
-
-        // Metadata for array/struct inference
-        bool is_array_access; // Was index register involved?
-        bool is_vector_op;    // Was XMM/YMM involved?
+        std::string context;
+        bool is_array_access;
+        bool is_vector_op;
     };
 
     struct ClassLayout {
@@ -31,40 +27,18 @@ namespace Analysis {
         std::vector<FieldAccess> fields;
     };
 
-    // --- Abstract Domain ---
-
-    // Represents a pointer derived from a known base
-    struct SymbolicPtr {
-        enum class Base {
-            This,       // The object instance (RCX at entry)
-            Stack,      // The stack frame (Entry RSP)
-            Global,     // Global data (RIP-relative)
-            Unknown
-        } type;
-
-        int64_t offset;     // Displacement from base
-        uint64_t global_va; // Only valid if type == Global
-
-        bool operator==(const SymbolicPtr&) const = default;
-    };
-
-    // Extended Lattice Value
-    using StructValue = std::variant<Top, Bottom, Constant, SymbolicPtr>;
-
     // Stack Memory Model: Sparse map of [Offset from Entry RSP] -> Value
-    using StackMemory = std::map<int64_t, StructValue>;
+    using StackMemory = std::map<int64_t, LatticeValue>;
 
     // Full Machine State
-    // GPRs: RAX..R15 (16)
-    // XMMs: XMM0..XMM15 (16) - Used for vectorized field init
     constexpr int REG_COUNT_GPR = 16;
     constexpr int REG_COUNT_XMM = 16;
     constexpr int TOTAL_REG_COUNT = REG_COUNT_GPR + REG_COUNT_XMM;
 
     struct StructState {
-        std::array<StructValue, TOTAL_REG_COUNT> regs;
+        std::array<LatticeValue, TOTAL_REG_COUNT> regs;
         StackMemory stack;
-        int64_t rsp_delta; // Tracks RSP relative to function entry
+        int64_t rsp_delta;
 
         StructState();
         bool operator==(const StructState& other) const;
@@ -75,39 +49,29 @@ namespace Analysis {
     public:
         StructureAnalyzer(const CFG& cfg, const PE::PELoader& loader);
 
-        // Phase 1: Analyze virtual methods to find field usages
         void analyze_vtables(const std::vector<VTableInfo>& vtables);
-
-        // Phase 2: Analyze constructors to find field initializations
         void analyze_constructors(const std::vector<Assignment>& assignments);
 
         const std::map<uint64_t, ClassLayout>& get_layouts() const { return layouts_; }
 
     private:
-        // Analysis Context
         struct Context {
-            uint64_t vtable_va; // The VTable we are reconstructing
-            bool is_constructor; // Enables specific logic for vtable assignment
+            uint64_t vtable_va;
+            bool is_constructor;
         };
 
         void analyze_function(Common::RVA start_rva, Context ctx);
 
-        // Transfer Function
         StructState transfer(const BasicBlock& block, const StructState& in_state, const Context& ctx);
-
-        // Meet Operator
         StructState meet(const std::vector<uint32_t>& pred_ids, const std::vector<StructState>& block_out_states);
-        static StructValue meet_value(const StructValue& a, const StructValue& b);
 
-        // Instruction Handlers
         void handle_mov(const Instruction& instr, StructState& state, const Context& ctx);
         void handle_lea(const Instruction& instr, StructState& state);
-        void handle_arithmetic(const Instruction& instr, StructState& state); // ADD, SUB
-        void handle_stack_op(const Instruction& instr, StructState& state); // PUSH, POP
-        void handle_logic(const Instruction& instr, StructState& state); // XOR, OR, AND
+        void handle_arithmetic(const Instruction& instr, StructState& state);
+        void handle_stack_op(const Instruction& instr, StructState& state);
+        void handle_logic(const Instruction& instr, StructState& state);
 
-        // Helpers
-        int map_reg(unsigned int reg_id) const; // Maps Capstone ID to 0..31
+        int map_reg(unsigned int reg_id) const;
         void record_access(uint64_t vtable_va, int64_t offset, uint32_t size, bool is_write,
                            Common::RVA addr, const std::string& ctx, bool is_array, bool is_vector);
 

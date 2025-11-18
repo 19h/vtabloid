@@ -8,7 +8,6 @@ namespace Analysis {
     bool VTableScanner::is_executable_ptr(uint64_t va) const {
         uint64_t base = loader_.view().image_base();
         if (va < base) return false;
-
         if (va - base > 0xFFFFFFFF) return false;
 
         Common::RVA rva{static_cast<uint32_t>(va - base)};
@@ -122,7 +121,7 @@ namespace Analysis {
                     }
 
                     if (rtti || methods.size() >= 2) {
-                        vtables_.push_back({curr_rva, methods.size(), name, rtti});
+                        vtables_.push_back({curr_rva, methods.size(), name, rtti, methods});
                         off += (static_cast<uint32_t>(methods.size()) * static_cast<uint32_t>(ptr_size)) - static_cast<uint32_t>(ptr_size);
                     }
                 }

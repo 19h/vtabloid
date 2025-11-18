@@ -29,7 +29,6 @@ namespace Analysis {
     }
 
     int StructureAnalyzer::map_reg(unsigned int reg) const {
-        // GPRs 0-15
         switch(reg) {
             case X86_REG_RAX: case X86_REG_EAX: case X86_REG_AX: case X86_REG_AH: case X86_REG_AL: return 0;
             case X86_REG_RBX: case X86_REG_EBX: case X86_REG_BX: case X86_REG_BH: case X86_REG_BL: return 1;
@@ -48,13 +47,11 @@ namespace Analysis {
             case X86_REG_R14: case X86_REG_R14D: case X86_REG_R14W: case X86_REG_R14B: return 14;
             case X86_REG_R15: case X86_REG_R15D: case X86_REG_R15W: case X86_REG_R15B: return 15;
         }
-        // XMMs 16-31
         if (reg >= X86_REG_XMM0 && reg <= X86_REG_XMM15) {
-            return 16 + (reg - X86_REG_XMM0);
+            return 16 + static_cast<int>(reg - X86_REG_XMM0);
         }
-        // YMMs map to same slots as XMMs for our purpose (aliasing)
         if (reg >= X86_REG_YMM0 && reg <= X86_REG_YMM15) {
-            return 16 + (reg - X86_REG_YMM0);
+            return 16 + static_cast<int>(reg - X86_REG_YMM0);
         }
         return -1;
     }
@@ -106,7 +103,6 @@ namespace Analysis {
     }
 
     void StructureAnalyzer::analyze_constructors(const std::vector<Assignment>& assignments) {
-        // Group by function to avoid redundant analysis
         std::map<uint32_t, std::set<uint64_t>> func_to_vtables;
 
         for (const auto& assign : assignments) {
@@ -119,11 +115,6 @@ namespace Analysis {
         std::cout << "    [Structure] Analyzing " << func_to_vtables.size() << " constructor contexts..." << std::endl;
 
         for (const auto& [func_rva_val, vtables] : func_to_vtables) {
-            // For each vtable assigned in this function, we run the analysis.
-            // Note: If a function assigns multiple vtables (inlined base constructors),
-            // we ideally want to track the 'this' pointer state changes.
-            // Our current Context only supports one vtable target.
-            // We iterate. This is O(N*M) but necessary for precision.
             for (uint64_t vt_va : vtables) {
                 Context ctx;
                 ctx.vtable_va = vt_va;
@@ -148,13 +139,8 @@ namespace Analysis {
         worklist.push_back(start_idx);
         in_worklist[start_idx] = true;
 
-        // Initialize Entry State
-        // RCX (x64) or ECX (x86) is 'this'
         int this_reg = loader_.is_64bit() ? map_reg(X86_REG_RCX) : map_reg(X86_REG_ECX);
         if (this_reg >= 0) {
-            // In a constructor, 'this' is uninitialized until vtable assignment?
-            // No, the pointer exists, but the vtable field is garbage.
-            // We track it as 'This' base.
             block_in[start_idx].regs[static_cast<size_t>(this_reg)] = SymbolicPtr{SymbolicPtr::Base::This, 0, 0};
         }
 
@@ -187,24 +173,6 @@ namespace Analysis {
         }
     }
 
-    StructValue StructureAnalyzer::meet_value(const StructValue& a, const StructValue& b) {
-        if (std::holds_alternative<Top>(a)) return b;
-        if (std::holds_alternative<Top>(b)) return a;
-        if (std::holds_alternative<Bottom>(a) || std::holds_alternative<Bottom>(b)) return Bottom{};
-
-        if (std::holds_alternative<Constant>(a) && std::holds_alternative<Constant>(b)) {
-            if (std::get<Constant>(a).value == std::get<Constant>(b).value) return a;
-        }
-
-        if (std::holds_alternative<SymbolicPtr>(a) && std::holds_alternative<SymbolicPtr>(b)) {
-            const auto& sa = std::get<SymbolicPtr>(a);
-            const auto& sb = std::get<SymbolicPtr>(b);
-            if (sa.type == sb.type && sa.offset == sb.offset) return a;
-        }
-
-        return Bottom{};
-    }
-
     StructState StructureAnalyzer::meet(const std::vector<uint32_t>& pred_ids, const std::vector<StructState>& block_out_states) {
         if (pred_ids.empty()) return StructState();
 
@@ -219,7 +187,7 @@ namespace Analysis {
                 auto it = result.stack.begin();
                 while (it != result.stack.end()) {
                     if (p_state.stack.count(it->first)) {
-                        it->second = meet_value(it->second, p_state.stack.at(it->first));
+                        it->second = Lattice::meet(it->second, p_state.stack.at(it->first));
                         if (std::holds_alternative<Bottom>(it->second)) {
                             it = result.stack.erase(it);
                         } else {
@@ -232,20 +200,16 @@ namespace Analysis {
             }
 
             for (int r = 0; r < TOTAL_REG_COUNT; ++r) {
-                result.regs[static_cast<size_t>(r)] = meet_value(result.regs[static_cast<size_t>(r)], p_state.regs[static_cast<size_t>(r)]);
+                result.regs[static_cast<size_t>(r)] = Lattice::meet(result.regs[static_cast<size_t>(r)], p_state.regs[static_cast<size_t>(r)]);
             }
         }
         return result;
     }
 
-    // --- Instruction Handlers ---
-
     void StructureAnalyzer::handle_mov(const Instruction& instr, StructState& state, const Context& ctx) {
         const auto& dest = instr.operands[0];
         const auto& src = instr.operands[1];
 
-        // 1. Check for Field Access (Memory Operand)
-        // We check both Source (Read) and Dest (Write) for 'This' base
         auto check_access = [&](const cs_x86_op& op, bool is_write) {
             if (op.type != X86_OP_MEM) return;
 
@@ -257,33 +221,22 @@ namespace Analysis {
 
                 if (sym.type == SymbolicPtr::Base::This) {
                     int64_t final_offset = sym.offset + op.mem.disp;
+                    bool is_array = (index_idx >= 0);
 
-                    // Handle Array Access: [Base + Index*Scale + Disp]
-                    bool is_array = (index_idx >= 0); // If index reg exists, it's likely an array
-
-                    // Determine size
                     uint32_t size = 0;
-                    // If other operand is reg, use its size
                     const auto& other_op = is_write ? src : dest;
                     if (other_op.type == X86_OP_REG) {
-                        // Heuristic size mapping
-                        if (other_op.reg >= X86_REG_XMM0) size = 16; // Vector
+                        if (other_op.reg >= X86_REG_XMM0) size = 16;
                         else if (other_op.reg >= X86_REG_RAX && other_op.reg <= X86_REG_R15) size = 8;
                         else if (other_op.reg >= X86_REG_EAX && other_op.reg <= X86_REG_R15D) size = 4;
                         else if (other_op.reg >= X86_REG_AX && other_op.reg <= X86_REG_R15W) size = 2;
                         else size = 1;
                     } else if (other_op.type == X86_OP_IMM) {
-                        // Immediate size is ambiguous, usually 4 or 8 bytes in x64
-                        size = 4; // Default guess
+                        size = 4;
                     }
 
                     bool is_vector = (size >= 16);
                     std::string disasm = instr.mnemonic + std::string(" ") + instr.op_str;
-
-                    // Filter: If this is a constructor, and we are writing the VTable pointer to offset 0,
-                    // we don't record it as a "field" in the layout sense, or we mark it special.
-                    // But wait, we want to know where the vtable is.
-                    // If src is immediate and matches ctx.vtable_va, this is THE assignment.
 
                     record_access(ctx.vtable_va, final_offset, size, is_write, instr.address, disasm, is_array, is_vector);
                 }
@@ -293,7 +246,6 @@ namespace Analysis {
         check_access(dest, true);
         check_access(src, false);
 
-        // 2. State Update (Propagation)
         if (dest.type == X86_OP_REG) {
             int dst_idx = map_reg(dest.reg);
             if (dst_idx < 0) return;
@@ -307,7 +259,6 @@ namespace Analysis {
                 state.regs[static_cast<size_t>(dst_idx)] = Constant{static_cast<uint64_t>(src.imm)};
             }
             else if (src.type == X86_OP_MEM) {
-                // Load from Stack?
                 if (src.mem.base == X86_REG_RSP) {
                     int64_t slot = state.rsp_delta + src.mem.disp;
                     if (state.stack.count(slot)) {
@@ -316,7 +267,6 @@ namespace Analysis {
                         state.regs[static_cast<size_t>(dst_idx)] = Bottom{};
                     }
                 } else {
-                    // Check if base is a stack pointer (e.g. RBP)
                     int base_idx = map_reg(src.mem.base);
                     if (base_idx >= 0 && std::holds_alternative<SymbolicPtr>(state.regs[static_cast<size_t>(base_idx)])) {
                         auto sym = std::get<SymbolicPtr>(state.regs[static_cast<size_t>(base_idx)]);
@@ -337,7 +287,6 @@ namespace Analysis {
             }
         }
         else if (dest.type == X86_OP_MEM) {
-            // Store to Stack?
             int64_t target_slot = 0;
             bool is_stack = false;
 
@@ -373,7 +322,6 @@ namespace Analysis {
         if (dst_idx < 0) return;
 
         if (src.type == X86_OP_MEM) {
-            // RIP-Relative LEA (Global Address)
             if (src.mem.base == X86_REG_RIP) {
                 uint64_t rip = loader_.view().image_base() + instr.address.value + instr.size;
                 uint64_t target = rip + static_cast<uint64_t>(src.mem.disp);
@@ -381,13 +329,11 @@ namespace Analysis {
                 return;
             }
 
-            // Stack LEA
             if (src.mem.base == X86_REG_RSP) {
                 state.regs[static_cast<size_t>(dst_idx)] = SymbolicPtr{SymbolicPtr::Base::Stack, state.rsp_delta + src.mem.disp, 0};
                 return;
             }
 
-            // Base + Disp LEA
             int base_idx = map_reg(src.mem.base);
             if (base_idx >= 0 && std::holds_alternative<SymbolicPtr>(state.regs[static_cast<size_t>(base_idx)])) {
                 auto sym = std::get<SymbolicPtr>(state.regs[static_cast<size_t>(base_idx)]);
@@ -404,14 +350,12 @@ namespace Analysis {
         const auto& src = instr.operands[1];
 
         if (dest.type == X86_OP_REG && src.type == X86_OP_IMM) {
-            // RSP Adjustment
             if (dest.reg == X86_REG_RSP) {
                 if (instr.id == X86_INS_ADD) state.rsp_delta += src.imm;
                 else if (instr.id == X86_INS_SUB) state.rsp_delta -= src.imm;
                 return;
             }
 
-            // Pointer Arithmetic
             int dst_idx = map_reg(dest.reg);
             if (dst_idx >= 0 && std::holds_alternative<SymbolicPtr>(state.regs[static_cast<size_t>(dst_idx)])) {
                 auto& sym = std::get<SymbolicPtr>(state.regs[static_cast<size_t>(dst_idx)]);
@@ -484,7 +428,6 @@ namespace Analysis {
                     handle_logic(instr, state);
                     break;
                 default:
-                    // Clobber destination registers for unhandled instructions
                     for (int i = 0; i < instr.op_count; ++i) {
                         if (instr.operands[i].type == X86_OP_REG && (instr.operands[i].access & CS_AC_WRITE)) {
                             int idx = map_reg(instr.operands[i].reg);
